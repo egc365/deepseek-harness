@@ -36,6 +36,8 @@ import type {
   SessionCreateValue,
   SessionForkRequest,
   SessionForkValue,
+  SessionMoveRequest,
+  SessionMoveValue,
   SessionPromptRequest,
   SessionPromptValue,
   SessionRenameRequest,
@@ -231,15 +233,32 @@ export class SessionCommandController {
       cut = SessionLogOffset(cut + 1)
     }
     let workspace: Workspace | undefined
-    try {
-      workspace = await this.forkWorkspace(source.header)
-    } catch (error) {
-      throw new RemoteError(
-        'gateway/internal',
-        `failed to resolve fork workspace for session "${request.sessionId}": ${String(error)}`,
-        {},
-      )
+    if (request.workspaceId !== undefined) {
+      workspace = this.ctx.workspaceRegistry.get(request.workspaceId)
+      if (workspace === undefined) {
+        throw new RemoteError('workspace/not-found', `workspace "${request.workspaceId}" not found`, {
+          workspaceId: request.workspaceId,
+        })
+      }
+      if (await workspace.status() !== 'ok') {
+        throw new RemoteError(
+          'gateway/bad-request',
+          `workspace "${request.workspaceId}" directory is unavailable`,
+          {},
+        )
+      }
+    } else {
+      try {
+        workspace = await this.forkWorkspace(source.header)
+      } catch (error) {
+        throw new RemoteError(
+          'gateway/internal',
+          `failed to resolve fork workspace for session "${request.sessionId}": ${String(error)}`,
+          {},
+        )
+      }
     }
+    const childCwd = workspace?.path ?? source.header.cwd
     const childId = brandString<SessionId>(`session-${randomUUID()}`)
     const composition = await this.agents.composeAgent(this.agents.presetForObservation(source))
     try {
@@ -249,7 +268,7 @@ export class SessionCommandController {
         seed: source.events.slice(0, cut),
         inheritedEventCount: cut,
         meta: {
-          ...(source.header.cwd === undefined ? {} : { cwd: source.header.cwd }),
+          ...(childCwd === undefined ? {} : { cwd: childCwd }),
           parentSession: source.header.id,
           isSeeded: true,
           ...(composition.agentPreset === undefined
@@ -278,6 +297,34 @@ export class SessionCommandController {
       }
     }
     return { sessionId: childId }
+  }
+
+  /**
+   * Move a Session across immutable-cwd Workspace boundaries by creating a
+   * destination continuation, then archiving the retained source.
+   * @param request - source Session and destination Workspace identities.
+   * @returns the continuation identity.
+   */
+  async move(request: SessionMoveRequest): Promise<SessionMoveValue> {
+    const target = this.ctx.workspaceRegistry.get(request.workspaceId)
+    if (target?.sessionIds.includes(request.sessionId) === true) {
+      throw new RemoteError(
+        'gateway/bad-request',
+        `session "${request.sessionId}" already belongs to workspace "${request.workspaceId}"`,
+        {},
+      )
+    }
+    const child = await this.fork(request)
+    try {
+      await this.ctx.workspaceRegistry.archiveSession(request.sessionId)
+    } catch (error) {
+      // The destination child is already durable. Return it instead of making
+      // a retry create another child; the retained source remains recoverable.
+      this.ctx.logger.warn(
+        `session move created "${child.sessionId}" but could not archive source "${request.sessionId}": ${String(error)}`,
+      )
+    }
+    return child
   }
 
   /**

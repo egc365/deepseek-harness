@@ -754,6 +754,13 @@ inspect( sessionId: SessionId, signal?: AbortSignal, ): Promise<SessionInspectio
 @Remote('fork') fork(request: SessionForkRequest): Promise<SessionForkValue>
 
 /**
+ * Continue one Session in another Workspace and archive the source.
+ * @param request - source Session and destination Workspace.
+ * @returns the continuation Session identity.
+ */
+@Remote('move') move(request: SessionMoveRequest): Promise<SessionMoveValue>
+
+/**
  * Admit one prompt after explicitly resuming its Session.
  * @param request - Session identity, prompt content, source metadata, and delivery mode.
  * @param signal - caller cancellation before prompt admission begins.

@@ -14,6 +14,7 @@ import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ObservableSnapshot, SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 import { sessionSnapshot } from './fixtures.ts'
 import type {
   SessionFixture, SessionFixtureSnapshot, Stabilizer,
@@ -198,7 +199,7 @@ export class TestSessions implements ISessions {
   /** Calls observed on the service-level face, newest last. */
   readonly calls: {
     method: 'create' | 'open' | 'openSubagent' | 'setSubagentCatalogOpen' | 'refreshSubagents'
-      | 'clear' | 'refresh' | 'search' | 'fork'
+      | 'clear' | 'refresh' | 'search' | 'fork' | 'move'
     args: unknown[]
   }[] = []
 
@@ -509,11 +510,22 @@ export class TestSessions implements ISessions {
   /**
    * Recorded fork stub: no child materializes (benches asserting the full
    * fork flow drive the production service; this face only proves the call).
-   * @param opts - source session id, optional cut anchor, and client title policy.
+   * @param opts - source id, optional cut anchor, destination Workspace, and client title policy.
    * @returns the source id (no child record is created).
    */
-  fork(opts: { sessionId: SessionId; atSeq?: number; increaseTitle?: boolean }): Promise<SessionId> {
+  fork(opts: {
+    sessionId: SessionId
+    atSeq?: number
+    workspaceId?: WorkspaceId
+    increaseTitle?: boolean
+  }): Promise<SessionId> {
     this.calls.push({ method: 'fork', args: [opts] })
+    return Promise.resolve(opts.sessionId)
+  }
+
+  /** Recorded move stub; returns the source id without materializing a child. */
+  move(opts: { sessionId: SessionId; workspaceId: WorkspaceId }): Promise<SessionId> {
+    this.calls.push({ method: 'move', args: [opts] })
     return Promise.resolve(opts.sessionId)
   }
 

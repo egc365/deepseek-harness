@@ -480,6 +480,52 @@
   color: var(--dsw-alias-state-error-primary);
 }
 
+.moveWorkspaceList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.moveWorkspaceOption {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.moveWorkspaceOption:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.moveWorkspaceOption:disabled {
+  cursor: default;
+  color: var(--dsw-alias-label-dimmed);
+}
+
+.moveWorkspacePath {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.moveStatus {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+
 .deleteAction:not(:disabled) {
   color: var(--dsw-alias-state-error-primary);
 }

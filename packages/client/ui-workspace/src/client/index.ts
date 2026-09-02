@@ -117,6 +117,12 @@ export function apply(ctx: Context): void {
           // Fork or child-rename failure keeps the current selection.
         })
     },
+    moveSession: async (sessionId, workspaceId) => {
+      // The Host owns the successor creation, target attachment, and source
+      // archive ordering across the immutable-cwd boundary.
+      const childId = await sessions.move({ sessionId, workspaceId })
+      sessions.open(childId)
+    },
     renameWorkspace: async (workspaceId, title) => { await workspaces.rename(workspaceId, title) },
     deleteWorkspace: async (workspaceId) => { await workspaces.delete(workspaceId) },
     insertWorkspaceBefore: async (workspaceId, beforeWorkspaceId) => {

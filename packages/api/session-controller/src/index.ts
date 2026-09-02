@@ -38,6 +38,8 @@ import type {
   SessionFollowRequest,
   SessionForkRequest,
   SessionForkValue,
+  SessionMoveRequest,
+  SessionMoveValue,
   SessionListRequest,
   SessionListValue,
   SessionOpenWorkspacePathRequest,
@@ -323,6 +325,16 @@ export class SessionController extends TypertRemoteService {
   @Remote('fork')
   fork(request: SessionForkRequest): Promise<SessionForkValue> {
     return this.commands.fork(request)
+  }
+
+  /**
+   * Continue one Session in another Workspace and archive the source.
+   * @param request - source Session and destination Workspace.
+   * @returns the continuation Session identity.
+   */
+  @Remote('move')
+  move(request: SessionMoveRequest): Promise<SessionMoveValue> {
+    return this.commands.move(request)
   }
 
   /**

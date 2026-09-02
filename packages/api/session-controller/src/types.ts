@@ -291,10 +291,23 @@ export interface SessionRenameValue {
 export interface SessionForkRequest {
   readonly sessionId: SessionId
   readonly atSeq?: number
+  /** Optional destination Workspace whose directory becomes the child's immutable cwd. */
+  readonly workspaceId?: WorkspaceId
 }
 
 /** Identity of a newly forked Session. */
 export interface SessionForkValue {
+  readonly sessionId: SessionId
+}
+
+/** Move one Session by creating a destination continuation and archiving its source. */
+export interface SessionMoveRequest {
+  readonly sessionId: SessionId
+  readonly workspaceId: WorkspaceId
+}
+
+/** Identity of the destination continuation created by a Session move. */
+export interface SessionMoveValue {
   readonly sessionId: SessionId
 }
 

@@ -124,6 +124,20 @@ export class SessionForkError extends Error {
   }
 }
 
+/** Structured cross-Workspace Session move failure. */
+export class SessionMoveError extends Error {
+  override readonly name = 'SessionMoveError'
+
+  /** @param rpcError - Host business or folded transport error. */
+  constructor(
+    readonly rpcError: RemoteFailure,
+    readonly sourceSessionId: SessionId,
+    readonly workspaceId: WorkspaceId,
+  ) {
+    super(`session move failed: ${rpcError.code}: ${rpcError.message}`)
+  }
+}
+
 /** Identity-stable logical binding for one materialized Client Session. */
 export interface SessionBinding {
   readonly sessionId: SessionId
@@ -417,7 +431,8 @@ export class ClientSessions implements ISessions {
    * @param opts - source session id, the optional event seq anchoring the
    *   cut (the boundary is the first turn/end at or after it; an in-log
    *   anchor in an open turn is unavailable rather than clipped backward),
-   *   and whether to increment an inherited durable title before resolving.
+   *   an optional destination Workspace for the child's cwd, and whether to
+   *   increment an inherited durable title before resolving.
    *   A fractional anchor floors to a real event seq: the frozen nodes of an
    *   interrupted turn carry flow-ordering seqs between two events, and the
    *   wire takes integers only.
@@ -428,6 +443,7 @@ export class ClientSessions implements ISessions {
   async fork(opts: {
     sessionId: SessionId
     atSeq?: number
+    workspaceId?: WorkspaceId
     increaseTitle?: boolean
   }): Promise<SessionId> {
     const sourceTitle = opts.increaseTitle
@@ -439,6 +455,7 @@ export class ClientSessions implements ISessions {
       // turn/start), so the host's first-turn/end-at-or-after cut still ends
       // on that turn — never clipped back to the previous one.
       ...(opts.atSeq === undefined ? {} : { atSeq: SessionSeq(Math.floor(opts.atSeq)) }),
+      ...(opts.workspaceId === undefined ? {} : { workspaceId: opts.workspaceId }),
     })
     if (!result.ok) throw new SessionForkError(result.error, opts.sessionId)
     this.projectList()
@@ -450,6 +467,20 @@ export class ClientSessions implements ISessions {
       if (!renamed.ok) throw new Error(`fork child rename failed: ${renamed.error.code}: ${renamed.error.message}`)
     }
     return childId
+  }
+
+  /**
+   * Continue one Session in another Workspace. The Host creates and attaches
+   * the destination continuation before archiving the retained source.
+   * @param opts - source Session and destination Workspace identities.
+   * @returns the destination continuation id.
+   * @throws {SessionMoveError} when the Host rejects the move.
+   */
+  async move(opts: { sessionId: SessionId; workspaceId: WorkspaceId }): Promise<SessionId> {
+    const result = await this.manager.move(opts)
+    if (!result.ok) throw new SessionMoveError(result.error, opts.sessionId, opts.workspaceId)
+    this.projectList()
+    return result.value.sessionId
   }
 
   /**

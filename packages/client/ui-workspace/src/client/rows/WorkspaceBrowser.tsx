@@ -258,6 +258,8 @@ type SessionTreeProps = Pick<
   onDeleteRequest: (workspaceId: WorkspaceId, currentTitle: string) => void
   /** Open the browser-owned session rename dialog. */
   onSessionRename: (sessionId: SessionNode['id'], currentTitle: string) => void
+  /** Open the browser-owned destination chooser for a Session move. */
+  onSessionMove: (sessionId: SessionNode['id']) => void
   /** Archive a session (row menu action; the row disappears on the state echo). */
   onSessionArchive: (sessionId: SessionNode['id']) => void
   /** Session order behavior: fixed after edits, or additionally promoted by user activity. */
@@ -267,7 +269,7 @@ type SessionTreeProps = Pick<
 /** The scrolling session tree; unmounting drops the sessions subscription and expand-all state. */
 function SessionTree({
   useSessions, useSessionPendingInteraction, startSession, open, forkSession, workspaces, archivedSessionIds,
-  onRenameRequest, onDeleteRequest, onSessionRename, onSessionArchive,
+  onRenameRequest, onDeleteRequest, onSessionRename, onSessionMove, onSessionArchive,
   insertWorkspaceBefore, insertSessionBefore, orderBy,
   groupExpansion, setGroupExpanded,
   sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, home, t,
@@ -563,6 +565,10 @@ function SessionTree({
                     onOpen={open}
                     onRename={onSessionRename}
                     onFork={forkSession}
+                    onMove={!node.running
+                      && workspaces.some(workspace => workspace.workspaceId !== group.workspaceId)
+                      ? onSessionMove
+                      : undefined}
                     onArchive={onSessionArchive}
                     drag={dragProps}
                     t={t}
@@ -592,8 +598,8 @@ function SessionTree({
 
 /** The flat "In one list" body: every session is one draggable top-level row. */
 function FlatList({
-  useSessions, useSessionPendingInteraction, open, forkSession, onSessionRename, onSessionArchive,
-  archivedSessionIds,
+  useSessions, useSessionPendingInteraction, open, forkSession, onSessionRename, onSessionMove, onSessionArchive,
+  workspaces, archivedSessionIds,
   orderBy, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, t,
 }: Pick<
   SessionTreeProps,
@@ -602,7 +608,9 @@ function FlatList({
   | 'open'
   | 'forkSession'
   | 'onSessionRename'
+  | 'onSessionMove'
   | 'onSessionArchive'
+  | 'workspaces'
   | 'archivedSessionIds'
   | 'orderBy'
   | 'sessionOrderByAccount'
@@ -682,6 +690,10 @@ function FlatList({
               onOpen={open}
               onRename={onSessionRename}
               onFork={forkSession}
+              onMove={!node.running
+                && workspaces.some(workspace => !workspace.sessionIds.includes(node.id))
+                ? onSessionMove
+                : undefined}
               onArchive={onSessionArchive}
               flat
               drag={{
@@ -811,6 +823,7 @@ export function WorkspaceBrowser({
   open,
   renameSession,
   forkSession,
+  moveSession,
   renameWorkspace,
   deleteWorkspace,
   insertWorkspaceBefore,
@@ -1022,6 +1035,36 @@ export function WorkspaceBrowser({
     setSessionRenameError(null)
   }
 
+  // A Session's cwd is immutable, so "move" is an explicit continuation:
+  // choose another Workspace, fork there with the same title/history, then
+  // archive the retained source. The dialog explains that boundary before any write.
+  const [moveTarget, setMoveTarget] = useState<SessionNode['id'] | null>(null)
+  const [moveDestination, setMoveDestination] = useState<WorkspaceId | null>(null)
+  const [moveError, setMoveError] = useState<string | null>(null)
+  const moveSourceWorkspaceId = moveTarget === null
+    ? undefined
+    : workspaces.find(workspace => workspace.sessionIds.includes(moveTarget))?.workspaceId
+  const moveDestinations = moveTarget === null
+    ? []
+    : workspaces.filter(workspace => workspace.workspaceId !== moveSourceWorkspaceId)
+  const closeMove = () => {
+    if (moveDestination !== null) return
+    setMoveTarget(null)
+    setMoveError(null)
+  }
+  const chooseMoveDestination = (workspaceId: WorkspaceId) => {
+    if (moveTarget === null || moveDestination !== null) return
+    setMoveDestination(workspaceId)
+    setMoveError(null)
+    moveSession(moveTarget, workspaceId).then(() => {
+      setMoveDestination(null)
+      setMoveTarget(null)
+    }).catch((reason: unknown) => {
+      setMoveDestination(null)
+      setMoveError(reason instanceof Error ? reason.message : String(reason))
+    })
+  }
+
   // Archive is dialog-free: not destructive (the log and the accounting slot
   // remain), so the menu action commits directly; the row disappears when the
   // archive-set echo lands. Failures are non-fatal console diagnostics, the
@@ -1220,8 +1263,8 @@ export function WorkspaceBrowser({
               <FlatList
                 useSessions={useSessions} useSessionPendingInteraction={useSessionPendingInteraction}
                 open={open} forkSession={forkSession}
-                onSessionRename={onSessionRename} onSessionArchive={onSessionArchive}
-                archivedSessionIds={archivedSessionIds}
+                onSessionRename={onSessionRename} onSessionMove={setMoveTarget} onSessionArchive={onSessionArchive}
+                workspaces={workspaces} archivedSessionIds={archivedSessionIds}
                 orderBy={orderBy}
                 sessionOrderByAccount={sessionOrderByAccount}
                 sessionUpdatedAtByAccount={sessionUpdatedAtByAccount}
@@ -1235,6 +1278,7 @@ export function WorkspaceBrowser({
                 useSessions={useSessions}
                 useSessionPendingInteraction={useSessionPendingInteraction}
                 onSessionRename={onSessionRename}
+                onSessionMove={setMoveTarget}
                 onSessionArchive={onSessionArchive}
                 forkSession={forkSession}
                 workspaces={workspaces}
@@ -1330,6 +1374,31 @@ export function WorkspaceBrowser({
           }}
         />
         {sessionRenameError !== null && <div className={css.renameError} role="alert">{sessionRenameError}</div>}
+      </Modal>
+      <Modal
+        open={moveTarget !== null}
+        onClose={closeMove}
+        closeLabel={t('close')}
+        title={t('move.session.title')}
+        description={t('move.session.desc')}
+        footer={<Button variant="outline" disabled={moveDestination !== null} onClick={closeMove}>{t('cancel')}</Button>}
+      >
+        <div className={css.moveWorkspaceList}>
+          {moveDestinations.map(workspace => (
+            <button
+              key={workspace.workspaceId}
+              type="button"
+              className={css.moveWorkspaceOption}
+              disabled={moveDestination !== null}
+              onClick={() => { chooseMoveDestination(workspace.workspaceId) }}
+            >
+              <span>{workspace.title}</span>
+              <span className={css.moveWorkspacePath}>{workspace.path}</span>
+            </button>
+          ))}
+        </div>
+        {moveDestination !== null && <div className={css.moveStatus} role="status">{t('move.session.pending')}</div>}
+        {moveError !== null && <div className={css.renameError} role="alert">{moveError}</div>}
       </Modal>
       <Modal
         open={deleteTarget !== null}

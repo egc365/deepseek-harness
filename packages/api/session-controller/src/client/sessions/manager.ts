@@ -590,16 +590,17 @@ export class SessionManager {
    * child carries the source's history, so it is never blank; lineage rides
    * parentSessionId so the list nests it under its source. A child published
    * before Workspace attachment fails is also reconciled into the list.
-   * @param opts - source session and the optional seq anchoring the cut.
+   * @param opts - source Session, optional cut anchor, and optional destination Workspace.
    * @returns the fork result (the child session id).
    */
   async fork(
-    opts: { sessionId: SessionId; atSeq?: SessionSeq },
+    opts: { sessionId: SessionId; atSeq?: SessionSeq; workspaceId?: WorkspaceId },
   ): Promise<RemoteResult<{ sessionId: SessionId }>> {
     const source = this.summaries.find(s => s.sessionId === opts.sessionId)
     const result = await this.remote.session.fork({
       sessionId: opts.sessionId,
       ...opts.atSeq === undefined ? {} : { atSeq: opts.atSeq },
+      ...opts.workspaceId === undefined ? {} : { workspaceId: opts.workspaceId },
     })
     const childId = result.ok
       ? result.value.sessionId
@@ -608,7 +609,29 @@ export class SessionManager {
       this.recordMutation({ kind: 'upsert', summary: {
         sessionId: childId, updatedAt: Date.now(), running: false, blank: false,
         parentSessionId: opts.sessionId,
-        ...(source?.cwd !== undefined ? { cwd: source.cwd } : {}),
+        ...(opts.workspaceId === undefined && source?.cwd !== undefined ? { cwd: source.cwd } : {}),
+      } })
+    }
+    return result
+  }
+
+  /**
+   * Contract session.move; merge the destination continuation immediately.
+   * Its target cwd arrives from the authoritative Host frame/list refresh.
+   * @param opts - source Session and destination Workspace.
+   * @returns the move result.
+   */
+  async move(
+    opts: { sessionId: SessionId; workspaceId: WorkspaceId },
+  ): Promise<RemoteResult<{ sessionId: SessionId }>> {
+    const result = await this.remote.session.move(opts)
+    if (result.ok) {
+      this.recordMutation({ kind: 'upsert', summary: {
+        sessionId: result.value.sessionId,
+        updatedAt: Date.now(),
+        running: false,
+        blank: false,
+        parentSessionId: opts.sessionId,
       } })
     }
     return result

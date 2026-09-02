@@ -77,6 +77,7 @@ function mount(overrides: Partial<WorkspaceBrowserProps> = {}) {
     searchResultLimit: 20,
     renameSession: vi.fn(async () => {}),
     forkSession: vi.fn(),
+    moveSession: vi.fn(async () => {}),
     renameWorkspace: vi.fn(async () => {}),
     deleteWorkspace: vi.fn(async () => {}),
     archiveSession: vi.fn(async () => {}),
@@ -408,6 +409,36 @@ describe('WorkspaceBrowser', () => {
     })
     expect(restored.store.getSnapshot().sessionOrderByAccount.alpha).toEqual(['two', 'one'])
     expect(screen.getAllByRole('treeitem').slice(1)[0]?.textContent).toContain('two')
+  })
+
+  it('moves a session through an explicit destination dialog', async () => {
+    const moveSession = vi.fn(async () => {})
+    mount({
+      useSessions: hook(sessionState([summary('moving-s', 1)])),
+      useWorkspaces: hook(workspaceState([
+        workspace('alpha', ['moving-s'], 'Alpha'),
+        workspace('beta', [], 'Beta'),
+      ])),
+      moveSession,
+    })
+    fireEvent.click(screen.getByText('Alpha'))
+    fireEvent.click(screen.getByRole('button', { name: '会话“moving-s”的操作' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '移至其他工作区…' }))
+
+    expect(screen.getByRole('dialog').textContent).toContain('会话的工作目录无法更改')
+    fireEvent.click(screen.getByText('/projects/beta').closest('button') as HTMLElement)
+    expect(moveSession).toHaveBeenCalledWith(sid('moving-s'), wid('beta'))
+    await waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull() })
+  })
+
+  it('hides the move action when no other Workspace exists', () => {
+    mount({
+      useSessions: hook(sessionState([summary('only-s', 1)])),
+      useWorkspaces: hook(workspaceState([workspace('only', ['only-s'])])),
+    })
+    fireEvent.click(screen.getByText('only'))
+    fireEvent.click(screen.getByRole('button', { name: '会话“only-s”的操作' }))
+    expect(screen.queryByRole('menuitem', { name: '移至其他工作区…' })).toBeNull()
   })
 
   it('archives a session from the row menu and hides archived rows in both modes', async () => {

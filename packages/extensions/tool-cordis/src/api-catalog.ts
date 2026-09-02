@@ -1402,6 +1402,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the new Session identity.',
       },
       {
+        signature: '@Remote(\'move\') move(request: SessionMoveRequest): Promise<SessionMoveValue>',
+        description: 'Continue one Session in another Workspace and archive the source.',
+        parameters: [{ name: 'request', description: 'source Session and destination Workspace.' }],
+        returns: 'the continuation Session identity.',
+      },
+      {
         signature: '@Remote(\'prompt\') prompt(request: SessionPromptRequest, signal: AbortSignal): Promise<SessionPromptValue>',
         description: 'Admit one prompt after explicitly resuming its Session.',
         parameters: [{ name: 'request', description: 'Session identity, prompt content, source metadata, and delivery mode.' }, { name: 'signal', description: 'caller cancellation before prompt admission begins.' }],
@@ -4878,7 +4884,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionForkRequest',
-    declaration: 'export interface SessionForkRequest {\n    readonly sessionId: SessionId;\n    readonly atSeq?: number;\n}',
+    declaration: 'export interface SessionForkRequest {\n    readonly sessionId: SessionId;\n    readonly atSeq?: number;\n    readonly workspaceId?: WorkspaceId;\n}',
   },
   {
     name: 'SessionForkSource',
@@ -4947,6 +4953,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionLogSnapshot',
     declaration: 'export interface SessionLogSnapshot {\n    session: SessionHeader;\n    inheritedEventCount: SessionLogOffset;\n    events: SessionEvent[];\n}',
+  },
+  {
+    name: 'SessionMoveRequest',
+    declaration: 'export interface SessionMoveRequest {\n    readonly sessionId: SessionId;\n    readonly workspaceId: WorkspaceId;\n}',
+  },
+  {
+    name: 'SessionMoveValue',
+    declaration: 'export interface SessionMoveValue {\n    readonly sessionId: SessionId;\n}',
   },
   {
     name: 'SessionObservation',

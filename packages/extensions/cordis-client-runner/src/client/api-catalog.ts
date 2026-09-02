@@ -198,11 +198,17 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'bounded results, or a business/transport error.',
       },
       {
-        signature: 'fork(opts: { sessionId: SessionId; atSeq?: number; increaseTitle?: boolean }): Promise<SessionId>',
+        signature: 'fork(opts: { sessionId: SessionId; atSeq?: number; workspaceId?: WorkspaceId; increaseTitle?: boolean }): Promise<SessionId>',
         description: 'Fork a session from a completed-turn prefix of the source; on resolution the child is in the list store and `open()` can target it.',
-        parameters: [{ name: 'opts', description: 'source session id, the optional event seq anchoring the cut (the boundary is the first turn/end at or after it; an in-log anchor in an open turn is unavailable rather than clipped backward), and whether to increment an inherited durable title before resolving.' }],
+        parameters: [{ name: 'opts', description: 'source session id, the optional event seq anchoring the cut (the boundary is the first turn/end at or after it; an in-log anchor in an open turn is unavailable rather than clipped backward), an optional destination Workspace for the child\'s cwd, and whether to increment an inherited durable title before resolving.' }],
         returns: 'the child session id.',
         throws: ['when the fork fails, or when a requested child-title rename fails after creation.'],
+      },
+      {
+        signature: 'move(opts: { sessionId: SessionId; workspaceId: WorkspaceId }): Promise<SessionId>',
+        description: 'Continue a Session in another Workspace and archive the retained source.',
+        parameters: [{ name: 'opts', description: 'source Session and destination Workspace identities.' }],
+        returns: 'the continuation Session id.',
       },
       {
         signature: 'scope(id: SessionId): AgentContext | undefined',

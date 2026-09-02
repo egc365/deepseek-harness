@@ -26,7 +26,11 @@ async function composed(workspaces: readonly Workspace[] = []): Promise<Context>
   await ctx.plugin(SystemPrompt, { persona: '' })
   await ctx.plugin(AgentRegistry)
   installSessionReadTestServices(ctx)
-  ctx.provide('workspaceRegistry', { list: () => workspaces } as never)
+  ctx.provide('workspaceRegistry', {
+    list: () => workspaces,
+    get: (id: Workspace['id']) => workspaces.find(workspace => workspace.id === id),
+    archiveSession: vi.fn<(id: SessionId) => Promise<void>>().mockResolvedValue(undefined),
+  } as never)
   ctx.agents.setFactory({
     createAgent: async (ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> => {
       const session = ctx.sessions.create(options.sessionId, {
@@ -100,6 +104,78 @@ describe('sessions.fork', () => {
     ])
     expect(child?.header.parentSession).toBe(source.id)
     expect(child?.header.cwd).toBe('/proj')
+    await ctx.fiber.dispose()
+  })
+
+  it('forks into an explicitly selected Workspace and uses its immutable cwd', async () => {
+    const attachSession = vi.fn<(sessionId: SessionId) => Promise<void>>()
+      .mockResolvedValue(undefined)
+    const target = {
+      id: 'workspace-target',
+      path: '/target-project',
+      sessionIds: [],
+      status: vi.fn(async () => 'ok' as const),
+      attachSession,
+    } as unknown as Workspace
+    const ctx = await composed([target])
+    const source = liveAgent(ctx, 'session-move-source', 1)
+
+    const response = await remote(ctx).fork(request({
+      sessionId: source.id,
+      workspaceId: target.id,
+    }))
+
+    expect(response.ok).toBe(true)
+    if (!response.ok) return
+    expect(attachSession).toHaveBeenCalledWith(response.value.sessionId)
+    expect(ctx.sessions.get(response.value.sessionId)?.header).toMatchObject({
+      parentSession: source.id,
+      cwd: '/target-project',
+    })
+    await ctx.fiber.dispose()
+  })
+
+  it('moves by attaching a destination continuation before archiving the source', async () => {
+    const order: string[] = []
+    const target = {
+      id: 'workspace-move-target',
+      path: '/moved-project',
+      sessionIds: [],
+      status: vi.fn(async () => 'ok' as const),
+      attachSession: vi.fn(async () => { order.push('attach') }),
+    } as unknown as Workspace
+    const ctx = await composed([target])
+    const archive = vi.spyOn(ctx.workspaceRegistry, 'archiveSession')
+      .mockImplementation(async () => { order.push('archive') })
+    const source = liveAgent(ctx, 'session-host-move', 1)
+
+    const response = await remote(ctx).move(request({
+      sessionId: source.id,
+      workspaceId: target.id,
+    }))
+
+    expect(response.ok).toBe(true)
+    if (!response.ok) return
+    expect(order).toEqual(['attach', 'archive'])
+    expect(archive).toHaveBeenCalledWith(source.id)
+    expect(ctx.sessions.get(response.value.sessionId)?.header.cwd).toBe('/moved-project')
+    await ctx.fiber.dispose()
+  })
+
+  it('rejects an unknown explicit destination before creating the child', async () => {
+    const ctx = await composed()
+    const source = liveAgent(ctx, 'session-move-missing-target', 1)
+
+    const response = await remote(ctx).fork(request({
+      sessionId: source.id,
+      workspaceId: 'missing-workspace' as Workspace['id'],
+    }))
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: { code: 'workspace/not-found', details: { workspaceId: 'missing-workspace' } },
+    })
+    expect(ctx.sessions.list()).toHaveLength(1)
     await ctx.fiber.dispose()
   })
 

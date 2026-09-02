@@ -2,7 +2,7 @@
  * Workspace browser tree row components (figma Cell set 14:3080): pure presentational —
  * all data and callbacks arrive via props. Hover swaps (folder->chevron,
  * time->ellipsis, action buttons) are CSS-only. Row ... menus are visual-only
- * except workspace Rename/Delete and session Rename/Fork/Archive; the session
+ * except workspace Rename/Delete and session Rename/Move/Fork/Archive; the session
  * and workspace hover cards are suppressed while a menu is open.
  */
 import { useState } from 'react'
@@ -369,13 +369,14 @@ export function SearchResultItem({ result, currentId, onOpen, t }: {
  * @param props.onOpen - open a session by id.
  * @param props.onRename - open the session rename dialog (id + current title).
  * @param props.onFork - fork a session at its last completed turn.
+ * @param props.onMove - open the destination-Workspace chooser when moving is available.
  * @param props.onArchive - archive a session by id.
  * @param props.drag - optional draggable-row wiring.
  * @param props.flat - omit the empty status slot in the hierarchy-free flat list.
  * @param props.t - the browser root's locale seat.
  * @returns the session row.
  */
-export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork, onArchive, drag, flat = false, t }: {
+export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork, onMove, onArchive, drag, flat = false, t }: {
   node: SessionNode
   currentId: string | undefined
   now: number
@@ -384,6 +385,8 @@ export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork
   onRename: (id: SessionNode['id'], currentTitle: string) => void
   /** Fork a session at its last completed turn (row menu action). */
   onFork: (id: SessionNode['id']) => void
+  /** Open the move dialog; absent when there is no other Workspace. */
+  onMove?: ((id: SessionNode['id']) => void) | undefined
   /** Archive this session (row menu action; commits without a dialog). */
   onArchive: (id: SessionNode['id']) => void
   /** Present only on draggable rows (workspace-group sessions outside search). */
@@ -404,6 +407,9 @@ export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork
   // confirmation dialog.
   const sessionMenuItems = [
     { id: 'rename', label: t('rename'), icon: <IconEditOutline16 /> },
+    ...(onMove === undefined
+      ? []
+      : [{ id: 'move', label: t('menu.moveSession'), icon: <IconFolderClose16 /> }]),
     { id: 'fork', label: t('menu.fork'), icon: <IconBranchOutline16 /> },
     // 20-native glyph in the menu's 16px icon slot (Menu.module.css .itemIcon).
     { id: 'archive', label: t('menu.archiveSession'), icon: <IconArchiveOutline20 size={16} /> },
@@ -468,6 +474,7 @@ export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork
             onSelect={(id) => {
               setMenuOpen(false)
               if (id === 'rename') onRename(node.id, row.title)
+              if (id === 'move') onMove?.(node.id)
               if (id === 'fork') onFork(node.id)
               if (id === 'archive') onArchive(node.id)
             }}

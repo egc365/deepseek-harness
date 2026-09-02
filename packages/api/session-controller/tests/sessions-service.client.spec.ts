@@ -685,6 +685,38 @@ describe('fork', () => {
     })
   })
 
+  it('passes an explicit destination Workspace and does not synthesize the source cwd', async () => {
+    const b = bench()
+    await feedList(b, [{ id: 'source', cwd: '/source' }])
+    b.api.onFork = () => Promise.resolve(ok({ sessionId: sid('child') }))
+
+    await expect(b.svc.fork({
+      sessionId: sid('source'), workspaceId: 'destination' as never,
+    })).resolves.toBe('child')
+
+    expect(b.api.callsOf('session.fork')).toEqual([{
+      sessionId: 'source', workspaceId: 'destination',
+    }])
+    expect(b.svc.list.getSnapshot().byId[sid('child')]?.cwd).toBeUndefined()
+  })
+
+  it('moves through the Host-owned command and publishes its continuation', async () => {
+    const b = bench()
+    await feedList(b, [{ id: 'source', cwd: '/source' }])
+    b.api.onMove = () => Promise.resolve(ok({ sessionId: sid('moved-child') }))
+
+    await expect(b.svc.move({
+      sessionId: sid('source'), workspaceId: 'destination' as never,
+    })).resolves.toBe('moved-child')
+
+    expect(b.api.callsOf('session.move')).toEqual([{
+      sessionId: 'source', workspaceId: 'destination',
+    }])
+    expect(b.svc.list.getSnapshot().byId[sid('moved-child')]).toMatchObject({
+      id: 'moved-child', parentId: 'source', blank: false,
+    })
+  })
+
   it('floors a fractional anchor to the real event seq the wire accepts', async () => {
     const b = bench()
     await feedList(b, [{ id: 'source', cwd: '/work' }])

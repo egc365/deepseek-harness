@@ -22,7 +22,7 @@ const runnerEntry = fileURLToPath(new URL('../src/runner.ts', import.meta.url))
 // binary (status null) and where.exe exits 1 without pwsh — only an actual
 // pwsh invocation's exit status is truth.
 function pwshAvailable(): boolean {
-  return spawnSync(resolvePwshPath(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '$true'], { encoding: 'utf8' }).status === 0
+  return spawnSync(resolvePwshPath(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '$true'], { encoding: 'utf8', timeout: 10_000 }).status === 0
 }
 
 function runRunner(args: string[], timeoutMs = 30_000) {
@@ -57,7 +57,7 @@ describe.skipIf(!isWin32 || !pwshAvailable())('windows-acl runner', () => {
     escapeFile = join(scratchRoot, 'escaped.txt')
     worldWritableDir = join(scratchRoot, 'world-writable')
     mkdirSync(worldWritableDir)
-    const worldGrant = spawnSync('icacls', [worldWritableDir, '/grant', '*S-1-1-0:(OI)(CI)(M)'], { encoding: 'utf8' })
+    const worldGrant = spawnSync('icacls', [worldWritableDir, '/grant', '*S-1-1-0:(OI)(CI)(M)'], { encoding: 'utf8', timeout: 10_000 })
     if (worldGrant.status !== 0) {
       throw new Error(`icacls Everyone grant failed: ${worldGrant.stdout}\n${worldGrant.stderr}`)
     }
@@ -540,10 +540,10 @@ describe.skipIf(!isWin32 || !pwshAvailable())('windows-acl runner', () => {
     writeFileSync(join(granted, 'file.txt'), 'x')
     writeFileSync(join(child, 'deep.txt'), 'x')
     const grant = AclWriteGrant.create(workspaceWriteSid(granted))
-    grant.add(granted, true)
     try {
+      grant.add(granted, true)
       const probe = `
-$ErrorActionPreference='SilentlyContinue'
+$ErrorActionPreference='Stop'
 Add-Type -Namespace P -Name F -MemberDefinition @'
 [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode, EntryPoint="CreateFileW")]
 public static extern IntPtr CreateFileW(string n, uint a, uint s, IntPtr sa, uint d, uint f, IntPtr t);
@@ -552,20 +552,33 @@ public static extern bool CloseHandle(IntPtr h);
 '@ | Out-Null
 function TryOpen([string]$label, [string]$path) {
   $h = [P.F]::CreateFileW($path, 0x10000000, 7, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
-  if ($h -eq [IntPtr]::new(-1)) { "$($label): DENIED" } else { [void][P.F]::CloseHandle($h); "$($label): OK" }
+  if ($h -eq [IntPtr]::new(-1)) {
+    $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if ($errorCode -ne 5) { throw "CreateFileW $label failed with $errorCode" }
+    "$($label): DENIED"
+  } else {
+    if (-not [P.F]::CloseHandle($h)) { throw "CloseHandle $label failed" }
+    "$($label): OK"
+  }
 }
 TryOpen 'FILE' '${join(granted, 'file.txt')}'
 TryOpen 'NESTED-FILE' '${join(child, 'deep.txt')}'
 TryOpen 'DIRECTORY' '${child}'
 `
-      const result = spawnSync('pwsh', ['-NoLogo', '-NonInteractive', '-NoProfile', '-Command', probe], { encoding: 'utf8', timeout: 60_000 })
+      const result = runRunner([
+        '--workspace', granted, '--temp', isolatedTemp, '--mode', 'workspace-write',
+        '--', resolvePwshPath(), '-NoLogo', '-NonInteractive', '-NoProfile', '-Command', probe,
+      ], 60_000)
       expect(result.status, `stderr: ${result.stderr}`).toBe(0)
       expect(result.stdout).toContain('FILE: OK')
       expect(result.stdout).toContain('NESTED-FILE: OK')
       expect(result.stdout).toContain('DIRECTORY: DENIED')
     } finally {
-      grant.dispose()
-      rmSync(granted, { recursive: true, force: true })
+      try {
+        grant.dispose()
+      } finally {
+        rmSync(granted, { recursive: true, force: true })
+      }
     }
   }, 60_000)
 

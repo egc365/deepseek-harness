@@ -1,5 +1,7 @@
 /** Recorded npm evidence stays intact while authored files and exact edits remain checked. */
 
+import { execFileSync } from 'node:child_process'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { exactEditState, isRescopeExcluded } from './rescope-vendor.ts'
 
@@ -7,6 +9,11 @@ const ANCHOR = '\n## Sync procedure'
 const INSERTED = `\n15. **rescope**: one log entry.\n${ANCHOR}`
 
 describe('rescope file selection', () => {
+  it('keeps Inspector event names intact when verifying the authored repository', () => {
+    const output = execFileSync(process.execPath, ['--import', 'tsx/esm', resolve(import.meta.dirname, 'rescope-vendor.ts'), '--check'], { encoding: 'utf8' })
+    expect(output).toContain('post-state verified — no residue, every exact edit landed, idempotent.')
+  })
+
   it('preserves the recorded npm resolution', () => {
     expect(isRescopeExcluded('scripts/dependency-catalog/package-lock.json')).toBe(true)
   })

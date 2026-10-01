@@ -8,7 +8,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Contributors can link Issues as context without coupling pull-request validation to Project availability. Resolving references additionally enforce Project Priority. The required `Issue policy` job and the separate lifecycle workflow use trusted default-branch code.
+Contributors can link Issues as context without coupling pull-request validation to Project availability. Resolving references additionally enforce Project Priority when the event repository matches the configured Project owner. The required `Issue policy` job and the separate lifecycle workflow use trusted default-branch code.
 
 ## Table of Contents
 
@@ -31,17 +31,17 @@ Selective preflight requires [selective-preflight.json](selective-preflight.json
 Eligible PRs need at least one same-repository Issue reference, exactly one canonical `kind/*`, at least one `area/*`, and at most one `p0`–`p3` label. Unsupported kinds, retired aliases, and `source/*` labels fail validation; [label taxonomy](../../.agents/notes/implemented/process/2026-08-08-unified-github-label-taxonomy.md) owns their meanings.
 
 - Informational references, such as `Refs #3624`, establish context. Validation uses REST to distinguish Issues from PR numbers and does not read their Project fields. An informational-only PR can carry its own Priority without matching the referenced Issue.
-- Resolving references use closing keywords such as `Fixes #123`, `Closes #123`, or `Resolves #123`. Only references that resolve to actual Issues require Project reads during validation. A PR Priority must match the highest resolving-Issue Priority; a resolving PR with a Priority label requires every resolving Issue to have Priority. If all resolving Priorities are empty, the PR may omit Priority.
+- Resolving references use closing keywords such as `Fixes #123`, `Closes #123`, or `Resolves #123`. Only references that resolve to actual Issues in the configured Project repository require Project reads during validation. A PR Priority must match the highest resolving-Issue Priority; a resolving PR with a Priority label requires every resolving Issue to have Priority. If all resolving Priorities are empty, the PR may omit Priority.
 - References inside HTML comments, code fences, or inline code do not count. Cross-repository references and references to PRs do not satisfy the Issue requirement.
 
-REST reads use the repository `GITHUB_TOKEN`. Project validation uses a separate App token with Issues and organization Projects read permissions. Missing required Project access or invalid field configuration fails validation rather than bypassing resolving-Issue Priority checks.
+REST reads use the repository `GITHUB_TOKEN`. Project validation uses a separate App token with Issues and organization Projects read permissions. Missing required Project access or invalid field configuration fails validation rather than bypassing resolving-Issue Priority checks. Other repositories enforce the same Issue references and PR labels using their own REST endpoints, without reading the configured upstream Project or matching its Priority fields.
 
 -----
 
 <a id="lifecycle-events"></a>
 ## Lifecycle events
 
-[Issue lifecycle](../workflows/issue-lifecycle.yml) mutates Project data independently of PR validation eligibility. PR opened/reopened events and body edits can advance resolving Issues to `In progress`; title-only edits do not. Review requests target `In review`. Changes-requested reviews target `In progress`, with the [human-ownership and terminal-status protections](../../.agents/notes/implemented/process/2026-08-10-event-directed-pr-review-status.md).
+[Issue lifecycle](../workflows/issue-lifecycle.yml) mutates Project data independently of PR validation eligibility in the configured Project repository. PR opened/reopened events and body edits can advance resolving Issues to `In progress`; title-only edits do not. Review requests target `In review`. Changes-requested reviews target `In progress`, with the [human-ownership and terminal-status protections](../../.agents/notes/implemented/process/2026-08-10-event-directed-pr-review-status.md).
 
 Approval-only and comment-only reviews do not allocate a lifecycle runner. PR pushes and label changes, and Issue assignment changes, do not trigger lifecycle work. Other subscribed Issue events maintain membership, state, and audit comments; exact subscriptions live in the workflow.
 
@@ -52,7 +52,7 @@ PR opening initializes an empty Project `Start Date` for every referenced Issue,
 <a id="configuration-and-limitations"></a>
 ## Configuration and limitations
 
-[config.json](config.json) selects the repository, Project, field names, statuses, lifecycle actor, and time zone. The policy reads the Project custom single-select `Priority` field, not a native organization Issue Priority field. Maintainers set Project Priority manually; skill guidance that directs edits to native Issue fields does not populate this value. Issue audits remove PR-only kinds and retired label aliases before validating the remaining metadata. There is no field migration or Priority synchronization.
+[config.json](config.json) selects the Project repository, field names, statuses, lifecycle actor, and time zone. In Actions, REST requests use the event repository after validating its full name, numeric identity, and PR base repository against the runtime identity. Other repositories do not mint a Project token or perform Project, Issue-type, status, or audit-comment operations; their Issue events only remove invalid labels using the repository token. The configured repository still requires its App credentials and Project access. Privileged workflows keep their trusted default-branch checkout, so a PR-only policy patch does not activate this behavior. The policy reads the Project custom single-select `Priority` field, not a native organization Issue Priority field. Maintainers set Project Priority manually; skill guidance that directs edits to native Issue fields does not populate this value. Issue audits remove PR-only kinds and retired label aliases before validating the remaining metadata. There is no field migration or Priority synchronization.
 
 Lifecycle processing is event-driven, not a reconciler. Omitted events do not repair Project state, and concurrent Project mutations have no atomic compare-and-swap. Selective evaluation does not redesign required-check authority or guarantee measured Actions-minute savings. The [selective-evaluation decision](../../.agents/notes/implemented/process/2026-09-07-selective-issue-policy-evaluation.md) records the trade-offs.
 
@@ -66,7 +66,7 @@ Maintainers reuse the owning module directly; [policy.mjs](policy.mjs) only read
 <details>
 <summary>Implementation owners</summary>
 
-[rules.mjs](rules.mjs) owns pure validation, reference parsing, status decisions, and date conversion. [github.mjs](github.mjs) owns credential selection, REST/GraphQL transport, Issue/Project reads, and Project membership and field writes.
+[repository.mjs](repository.mjs) owns validated event/runtime repository identity and the configured-Project boundary. [rules.mjs](rules.mjs) owns pure validation, reference parsing, status decisions, and date conversion. [github.mjs](github.mjs) owns credential selection, REST/GraphQL transport, Issue/Project reads, and Project membership and field writes.
 
 [pull-request.mjs](pull-request.mjs) assembles read-only PR snapshots and runs policy preflight and validation, including their workflow outputs. [lifecycle.mjs](lifecycle.mjs) reuses the PR reference reader and shared rules to coordinate Project mutations, Issue label repairs, and audit comments. Snapshot readers do not mutate GitHub; the shared transport also supports writes, so importing it does not restrict a caller's permissions.
 
@@ -80,7 +80,7 @@ Maintainers reuse the owning module directly; [policy.mjs](policy.mjs) only read
 The focused, keyless policy suite runs from the repository root:
 
 ```sh
-node --test .github/issue-management/policy.test.mjs
+node --test .github/issue-management/policy.test.mjs .github/issue-management/fork.test.mjs
 ```
 
 [Workflow tests](../../scripts/ci-workflow.spec.ts) verify trigger and permission declarations. Local tests do not establish live GitHub delivery, App installation access, or actual runner cost; repository maintainers verify those in Actions.

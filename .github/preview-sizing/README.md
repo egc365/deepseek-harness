@@ -26,7 +26,7 @@ A build-only benchmark does not deploy, access Cloudflare credentials, or post p
 
 ## Publication semantics
 
-Runner selection does not alter pull-request events, per-PR cancellation, immutable installation, restore-only dependency caching, full workspace build, preview packing, sourcemap removal, or the preview page copied to the deployment root. Cloudflare uploads only the built site to the PR branch alias. The protected-image check requires HTTP 200, no transport content encoding, and gzip magic bytes; the URL comment remains idempotent. Dependabot and other PR authors remain on GitHub-hosted machines.
+Runner selection does not alter pull-request events, per-PR cancellation, immutable installation, restore-only dependency caching, full workspace build, preview packing, sourcemap removal, or the preview page copied to the deployment root. Every run checks that the packed index is non-empty and the packed VFS image is valid gzip. When Cloudflare credentials are all unset, the workflow reports that the preview was packaged without deployment and skips only upload, protected-image delivery, and URL-comment steps. A partially configured deployment fails. Deployment requires its explicit project on forks; the upstream project default applies only to non-fork repositories. Cloudflare uploads only the built site to the PR branch alias. The protected-image check requires HTTP 200, no transport content encoding, and gzip magic bytes; the URL comment remains idempotent. Dependabot and other PR authors remain on GitHub-hosted machines.
 
 <a id="dev-note"></a>
 

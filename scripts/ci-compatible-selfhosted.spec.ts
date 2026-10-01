@@ -44,7 +44,7 @@ function route(options: { mode?: string; author?: string; repository?: string; f
     github: {
       repository: 'deepseek-harness/deepseek-harness',
       actor: options.actor ?? 'maintainer',
-      event: { pull_request: {
+      event: { repository: { fork: false }, pull_request: {
         user: { login: options.author ?? 'maintainer' },
         head: { repo: { full_name: options.repository ?? 'deepseek-harness/deepseek-harness', fork: options.fork ?? false } },
       } },

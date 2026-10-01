@@ -3,6 +3,7 @@
 import process from 'node:process'
 
 import config from './config.json' with { type: 'json' }
+import { assertIssueNumber, projectAutomationEnabled, repositoryFullName } from './repository.mjs'
 
 const API_VERSION = '2026-03-10'
 
@@ -69,9 +70,10 @@ export async function graphql(query, variables) {
  * @returns {Promise<object|null>} Issue snapshot, or null when the number identifies a pull request.
  */
 export async function issueSnapshot(number, status = undefined) {
-  const issue = await api(`/repos/${config.organization}/${config.repository}/issues/${number}`)
+  assertIssueNumber(number)
+  const issue = await api(`/repos/${repositoryFullName()}/issues/${number}`)
   if (issue.pull_request) return null
-  const context = await projectContext(number)
+  const context = projectAutomationEnabled() ? await projectContext(number) : { item: null }
   return {
     number,
     nodeId: issue.node_id,
@@ -92,6 +94,8 @@ export async function issueSnapshot(number, status = undefined) {
  * @returns {Promise<object>} Project, Issue, fields, optional item, and status actor; never writes.
  */
 export async function projectContext(number, includeStatusActor = false, includeStartDate = false) {
+  assertIssueNumber(number)
+  if (!projectAutomationEnabled()) throw new Error('Project automation not configured for this repository')
   const data = await graphql(
     `query(
       $organization: String!

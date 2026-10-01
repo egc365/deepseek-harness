@@ -278,6 +278,8 @@ export function validatePullRequest(input) {
     if (!input.issues.has(number)) errors.push(`#${number} 不是同仓库 Issue`)
   }
 
+  if (input.projectAvailable === false) return errors
+
   const resolving = input.references.resolving
     .map((number) => [number, input.issues.get(number)])
     .filter((entry) => entry[1])

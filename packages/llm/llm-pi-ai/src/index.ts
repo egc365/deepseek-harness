@@ -145,8 +145,27 @@ function directoryEntries(
   return [...entries.values()]
 }
 
+/** Transform one resolved profile generation before the adapter captures it. */
+export type PiAiProfileTransform = (
+  profiles: ReadonlyMap<string, ResolvedPiAiProviderProfile>,
+) => ReadonlyMap<string, ResolvedPiAiProviderProfile>
+
 /** Register one generic pi-ai adapter for all configured provider routes. */
 export function apply(ctx: Context, config: Config): void {
+  applyWithProfileTransform(ctx, config)
+}
+
+/**
+ * Register the stock adapter with a profile transform, preserving all stock ownership.
+ * @param ctx - plugin context carrying the LLM registry and optional host services.
+ * @param config - validated provider configuration.
+ * @param transform - one synchronous transform per resolved profile generation; default preserves identity.
+ */
+export function applyWithProfileTransform(
+  ctx: Context,
+  config: Config,
+  transform: PiAiProfileTransform = profiles => profiles,
+): void {
   ctx.inject(['settings'], (child) => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
   const settingsNs = ctx.fiber.entry?.options.id ?? NS
   let lastRaw: ReturnType<Config['providers']['get']> | undefined
@@ -163,7 +182,7 @@ export function apply(ctx: Context, config: Config): void {
   const profiles = (): ReadonlyMap<string, ResolvedPiAiProviderProfile> => {
     const raw = config.providers.get()
     if (raw === lastRaw && memoized !== undefined) return memoized
-    const next = resolveProfiles(structuredClone(raw) as import('./config.ts').Options['providers'], 'deferred')
+    const next = transform(resolveProfiles(structuredClone(raw) as import('./config.ts').Options['providers'], 'deferred'))
     lastRaw = raw
     memoized = next
     return next

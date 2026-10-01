@@ -95,11 +95,38 @@ function normalizeReleasedV0Event(
   const steering = normalizeLegacySteering(header, sessionId)
   const retry = normalizeLegacyRetry(steering, sessionId, state.retryIds)
   const compaction = normalizeLegacyCompaction(retry, sessionId, state)
-  const message = normalizeLegacyMessage(compaction, sessionId, state.messageIds)
+  const legacyMessage = normalizeLegacyMessage(compaction, sessionId, state.messageIds)
+  const descriptor = normalizeLegacySubagentDescriptor(legacyMessage)
+  const message = normalizeLegacyToolDelta(descriptor)
   if (message.type !== 'assistant/chunk') assertReleasedEventPayload(message, 0)
   const messageId = eventMessageId(message)
   if (messageId !== undefined) state.messageIds.set(message.seq, messageId)
   return message
+}
+
+function normalizeLegacyToolDelta(event: SessionFormatEvent): SessionFormatEvent {
+  if (event.type !== 'assistant/chunk') return event
+  const data = releasedV0Record(event.data, `assistant/chunk ${event.seq} data`)
+  const chunk = releasedV0Record(data['chunk'], `assistant/chunk ${event.seq} chunk`)
+  if (chunk['type'] !== 'tool-call-delta') return event
+  assertReleasedV0Keys(data, ['turn', 'step', 'chunk'], [], `assistant/chunk ${event.seq} data`)
+  assertReleasedV0Keys(chunk, ['type', 'index', 'id', 'argumentsDelta'], ['name'], `assistant/chunk ${event.seq} tool delta`)
+  if (chunk['name'] !== null) return event
+  // Both released assemblers treat null as no name update, not an empty name.
+  const { name: _name, ...currentChunk } = chunk
+  return { ...event, data: { ...data, chunk: currentChunk } }
+}
+
+function normalizeLegacySubagentDescriptor(event: SessionFormatEvent): SessionFormatEvent {
+  if (event.type !== 'subagent/descriptor') return event
+  const data = releasedV0Record(event.data, `subagent/descriptor ${event.seq} data`)
+  if (data['version'] !== 2) return event
+  const optional = data['mode'] === 'one-shot'
+    ? ['label']
+    : ['label', 'agentProvider', 'agentModel', 'persona', 'toolFilter']
+  assertReleasedV0Keys(data, ['mode', 'version', 'provider'], optional, `subagent/descriptor ${event.seq} v2 data`)
+  // V3 adds only optional reasoning effort; absence retains the resumed route's default.
+  return { ...event, data: { ...data, version: 3 } }
 }
 
 function normalizeLegacyCompactionType(event: SessionFormatEvent): SessionFormatEvent {

@@ -20,6 +20,8 @@ This package restores released v0 Session JSONL by decoding each physical row an
 - [Known Limitations and Deferred Work](#known-limitations-and-deferred-work)
 - [Dev Note](#dev-note)
 
+The v0 edge also promotes supported version-2 subagent descriptors to version 3 without adding reasoning effort, and removes only a null `name` from legacy tool-call deltas. Unknown fields still fail migration; direct v1 input remains strict. These normalizations preserve original tool identities and do not repair malformed final tool calls.
+
 -----
 
 <a id="use-this-package"></a>

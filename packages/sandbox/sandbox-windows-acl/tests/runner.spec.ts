@@ -565,13 +565,21 @@ TryOpen 'FILE' '${join(granted, 'file.txt')}'
 TryOpen 'NESTED-FILE' '${join(child, 'deep.txt')}'
 TryOpen 'DIRECTORY' '${child}'
 `
+      // The owner has FullControl; the restricted capability grants only Modify.
+      const ambient = spawnSync(resolvePwshPath(), ['-NoLogo', '-NonInteractive', '-NoProfile', '-Command', probe], { encoding: 'utf8', timeout: 60_000 })
+      expect(ambient.error, `stderr: ${ambient.stderr}`).toBeUndefined()
+      expect(ambient.signal, `stderr: ${ambient.stderr}`).toBeNull()
+      expect(ambient.status, `stderr: ${ambient.stderr}`).toBe(0)
+      expect(ambient.stdout).toContain('FILE: OK')
+      expect(ambient.stdout).toContain('NESTED-FILE: OK')
+      expect(ambient.stdout).toContain('DIRECTORY: DENIED')
       const result = runRunner([
         '--workspace', granted, '--temp', isolatedTemp, '--mode', 'workspace-write',
         '--', resolvePwshPath(), '-NoLogo', '-NonInteractive', '-NoProfile', '-Command', probe,
       ], 60_000)
       expect(result.status, `stderr: ${result.stderr}`).toBe(0)
-      expect(result.stdout).toContain('FILE: OK')
-      expect(result.stdout).toContain('NESTED-FILE: OK')
+      expect(result.stdout).toContain('FILE: DENIED')
+      expect(result.stdout).toContain('NESTED-FILE: DENIED')
       expect(result.stdout).toContain('DIRECTORY: DENIED')
     } finally {
       try {

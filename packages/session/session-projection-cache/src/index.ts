@@ -108,6 +108,10 @@ export class SessionProjectionCache extends Service {
 
   private table?: KvTable<SessionId, CheckpointRecord>
   private readonly dirty = new Map<Session, DirtyState>()
+  /** One admitted flush-then-put chain per session. Sessions do not share a chain. */
+  private readonly writes = new Map<SessionId, Promise<void>>()
+  /** False once disposal has stopped admitting new durable writes. */
+  private accepting = true
 
   constructor(ctx: Context, public config: Config) {
     super(ctx, 'sessionProjectionCache')
@@ -116,7 +120,11 @@ export class SessionProjectionCache extends Service {
   /** Open the domain and install the write-behind listeners. */
   protected async [Service.init](): Promise<void> {
     const domain = await this.ctx.storageDomain.open(projectionCacheDomainSpec)
-    this.ctx.effect(() => () => domain.close(), 'sessionProjectionCache.domainClose')
+    this.ctx.effect(() => async () => {
+      this.accepting = false
+      await Promise.all([...this.writes.values()])
+      await domain.close()
+    }, 'sessionProjectionCache.domainClose')
     this.table = domain.table('sessions')
     this.installWritePath()
   }
@@ -247,7 +255,7 @@ export class SessionProjectionCache extends Service {
   /**
    * Durably checkpoint one live session NOW (all mandatory points call
    * this; tests and carriers may too). The registry cut is snapshotted at
-   * this boundary (states are live references), then the session's record is
+   * this boundary as detached rows, then the session's record is
    * replaced on the domain's write chain. NOT fail-soft — callers on the
    * fail-soft paths contain it.
    * @param session - the live session to checkpoint.
@@ -255,20 +263,18 @@ export class SessionProjectionCache extends Service {
    */
   async write(session: Session): Promise<void> {
     const rows = this.ctx.sessionProjections.checkpoint(session)
+    const identity = identityOf(session.header, session.inheritedEventCount)
     this.markClean(session)
-    // Durability barrier: the checkpoint cut was taken above, so flushing
-    // AFTER it guarantees every event inside the cut is durably logged
-    // before the cache row lands — a crash can leave the cache behind the
-    // log (longer tail replay) but never ahead of it (phantom values folded
-    // from events no stored log contains). At detach the store entry is
-    // already gone; persistence's own retirement drain covers that path and
-    // any residual overreach is caught by the cold read's anchored floor.
-    if (this.ctx.sessions.get(session.id) === session) await this.ctx.sessions.flush(session)
-    await this.put(
-      session.id,
-      identityOf(session.header, session.inheritedEventCount),
-      rows,
-    )
+    // The cut and identity are captured before any wait. The per-session
+    // chain then flushes that cut and puts those rows. A later admission
+    // waits behind this one, so its put cannot be overwritten by this one.
+    await this.enqueue(session.id, async () => {
+      // Durability barrier: flushing AFTER the captured cut guarantees every
+      // event inside the cut is durably logged before the cache row lands.
+      // A crash can leave the cache behind the log, never ahead of it.
+      if (this.ctx.sessions.get(session.id) === session) await this.ctx.sessions.flush(session)
+      await this.put(session.id, identity, rows)
+    })
   }
 
   /**
@@ -299,7 +305,7 @@ export class SessionProjectionCache extends Service {
     )
     // Refresh the row so the next cold read seeds from it; fail-soft and
     // fire-and-forget — a failed write-back only costs a longer tail replay.
-    void this.put(meta.id, identity, restored.checkpoint).catch((error: unknown) => {
+    void this.enqueue(meta.id, () => this.put(meta.id, identity, restored.checkpoint)).catch((error: unknown) => {
       this.ctx.logger.warn(`session projection cache: cold-read write-back for "${meta.id}" failed (cache stays stale): ${String(error)}`)
     })
     return restored.snapshot
@@ -383,6 +389,22 @@ export class SessionProjectionCache extends Service {
       clearTimeout(state.timer)
       state.timer = undefined
     }
+  }
+
+  /**
+   * Run one session's flush and put after every write already admitted for that id.
+   * A failed job does not leave the chain rejected, so the next admission still runs.
+   */
+  private enqueue(id: SessionId, job: () => Promise<void>): Promise<void> {
+    if (!this.accepting) return Promise.reject(new Error('session projection cache is closed'))
+    const previous = this.writes.get(id) ?? Promise.resolve()
+    const run = previous.then(job, job)
+    const tail = run.then(() => undefined, () => undefined)
+    this.writes.set(id, tail)
+    void tail.finally(() => {
+      if (this.writes.get(id) === tail) this.writes.delete(id)
+    })
+    return run
   }
 
   /** Replace one session's stored record with its log identity and a detached snapshot of `rows`. */

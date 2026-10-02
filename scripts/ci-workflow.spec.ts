@@ -6,7 +6,11 @@ import { describe, expect, it } from 'vitest'
 
 function evaluateRunsOn(selector: unknown, context: Record<string, unknown>): unknown {
   if (typeof selector !== 'string') throw new TypeError('Runner selector must be a string')
-  return runInNewContext(selector.trim().slice(3, -2), context, { timeout: 1000 })
+  const github = isRecord(context.github) ? context.github : {}
+  const event = isRecord(github.event) ? github.event : {}
+  return runInNewContext(selector.trim().slice(3, -2), {
+    ...context, github: { ...github, event: { repository: { fork: false }, ...event } },
+  }, { timeout: 1000 })
 }
 
 const root = resolve(import.meta.dirname, '..')
@@ -231,7 +235,7 @@ describe('CI workflow', () => {
     }
 
     expect(windowsCoverage.name).toBe('windows node 24 / coverage')
-    expect(windowsCoverage.env).toMatchObject({ DSH_COVERAGE_PARTITIONS: "${{ vars.DSH_CI_FAILOVER_WINDOWS == 'selfhosted' && github.event.pull_request.user.login != 'dependabot[bot]' && '4' || '' }}" })
+    expect(windowsCoverage.env).toMatchObject({ DSH_COVERAGE_PARTITIONS: "${{ github.event.repository.fork != true && vars.DSH_CI_FAILOVER_WINDOWS == 'selfhosted' && github.event.pull_request.user.login != 'dependabot[bot]' && '4' || '' }}" })
     const coverageSteps = windowsCoverage.steps as unknown[]
     const coverageCommands = coverageSteps.filter((step): step is Record<string, unknown> & { run: string } => (
       isRecord(step) && typeof step.run === 'string'
@@ -268,7 +272,7 @@ describe('CI workflow', () => {
       'timeout-minutes': 15,
       env: {
         DSH_GATE_FAIL_FAST: '',
-        DSH_PUBLINT_CONCURRENCY: "${{ vars.DSH_CI_FAILOVER_WINDOWS == 'selfhosted' && github.event.pull_request.user.login != 'dependabot[bot]' && '8' || '' }}",
+        DSH_PUBLINT_CONCURRENCY: "${{ github.event.repository.fork != true && vars.DSH_CI_FAILOVER_WINDOWS == 'selfhosted' && github.event.pull_request.user.login != 'dependabot[bot]' && '8' || '' }}",
       },
     })
     expect(observational?.if).toBeUndefined()
@@ -1086,7 +1090,9 @@ describe('Issue lifecycle workflow', () => {
     const steps = lifecycleJob.steps.filter(isRecord)
     const tokenStep = steps.find(s => s.name === 'Create project token')
     const handleStep = steps.find(s => s.name === 'Handle repository event')
-    expect(tokenStep?.if).toBeUndefined()
+    expect(tokenStep?.if).toBe("${{ steps.preflight.outputs.needs-project == 'true' }}")
+    expect(steps.find(step => step.id === 'preflight')?.run)
+      .toBe('node .github/issue-management/policy.mjs lifecycle-preflight')
     expect(handleStep?.if).toBeUndefined()
 
     // issue-policy owns PR validation; it is read-only and a real gate.

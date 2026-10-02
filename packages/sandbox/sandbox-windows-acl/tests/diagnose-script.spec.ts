@@ -30,7 +30,7 @@ const isWin32 = process.platform === 'win32'
 
 function pwshAvailable(): boolean {
   try {
-    execFileSync('where.exe', ['pwsh'], { stdio: 'ignore' })
+    execFileSync('where.exe', ['pwsh'], { stdio: 'ignore', timeout: 10_000, windowsHide: true })
     return true
   } catch {
     return false
@@ -133,9 +133,72 @@ function normalized(path: string, lines: readonly string[]): string[] {
 describe.skipIf(!isWin32 || !pwshAvailable())('diagnose-windows-sandbox-acl script', { timeout }, () => {
   let meSid!: string
 
+  const scratchRoots = new Set<string>()
+
   function newScratch(): string {
     // Windows runners may expose TEMP through an 8.3 alias; PowerShell reports long paths.
-    return realpathSync.native(mkdtempSync(join(tmpdir(), 'dsh-acl-diagnose-')))
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'dsh-acl-diagnose-')))
+    scratchRoots.add(root.toLowerCase())
+    return root
+  }
+
+  function setFixturePermissions(path: string, trustee = meSid, rights: 'Modify' | 'FullControl' = 'Modify'): void {
+    const resolved = realpathSync.native(path).toLowerCase()
+    if (![...scratchRoots].some(root => resolved === root || resolved.startsWith(`${root}\\`))) {
+      throw new Error('ACL fixture setup requires an owned scratch directory')
+    }
+    const labels = integrityLines(path)
+    const observed: unknown = JSON.parse(pwsh(`
+$ErrorActionPreference = 'Stop'
+$path = ${quote(path)}
+$me = [System.Security.Principal.SecurityIdentifier]::new(${quote(meSid)})
+$acl = Get-Acl -LiteralPath $path
+$acl.SetOwner($me)
+Set-Acl -LiteralPath $path -AclObject $acl
+$acl = Get-Acl -LiteralPath $path
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($rule in @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))) {
+  [void]$acl.RemoveAccessRuleSpecific($rule)
+}
+$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+  [System.Security.Principal.SecurityIdentifier]::new(${quote(trustee)}),
+  [System.Security.AccessControl.FileSystemRights]::${rights},
+  [System.Security.AccessControl.AccessControlType]::Allow))
+Set-Acl -LiteralPath $path -AclObject $acl
+Add-Type -Namespace Fixture -Name Access -MemberDefinition @'
+[DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(
+  string path, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+public static bool HasAccess(string path, uint access) {
+  using (var handle = CreateFileW(path, access, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+    if (!handle.IsInvalid) return true;
+    int error = Marshal.GetLastWin32Error();
+    if (error == 5) return false;
+    throw new System.ComponentModel.Win32Exception(error);
+  }
+}
+'@
+$after = Get-Acl -LiteralPath $path
+$rules = @($after.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+@{
+  owner = $after.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+  protected = $after.AreAccessRulesProtected
+  rules = @($rules | ForEach-Object { @{
+    sid = $_.IdentityReference.Value; type = $_.AccessControlType.ToString()
+    rights = [int]$_.FileSystemRights; inherited = $_.IsInherited
+    inheritance = $_.InheritanceFlags.ToString(); propagation = $_.PropagationFlags.ToString()
+  } })
+  writeDac = [Fixture.Access]::HasAccess($path, 0x40000)
+  writeOwner = [Fixture.Access]::HasAccess($path, 0x80000)
+} | ConvertTo-Json -Depth 5 -Compress
+`))
+    expect(observed).toEqual({
+      owner: meSid, protected: true,
+      rules: [{ sid: trustee, type: 'Allow', rights: rights === 'Modify' ? 0x1301bf : 0x1f01ff,
+        inherited: false, inheritance: 'None', propagation: 'None' }],
+      writeDac: true, writeOwner: rights === 'FullControl',
+    })
+    expect(integrityLines(path)).toEqual(labels)
   }
 
   function makeDir(root: string, name: string): string {
@@ -248,7 +311,7 @@ describe.skipIf(!isWin32 || !pwshAvailable())('diagnose-windows-sandbox-acl scri
       icacls(target, '/setintegritylevel', 'L')
       const labelsBefore = integrityLines(target)
       expect(labelsBefore.length).toBeGreaterThan(0)
-      icacls(target, '/inheritance:r', '/grant:r', `*${meSid}:(M)`)
+      setFixturePermissions(target)
       const ownerBefore = ownerOf(target)
 
       const run = runScript(['-Path', target, '-AllowRoot', scratch, '-Out', join(scratch, 'out')])
@@ -272,7 +335,7 @@ describe.skipIf(!isWin32 || !pwshAvailable())('diagnose-windows-sandbox-acl scri
     const scratch = newScratch()
     try {
       const target = makeDir(scratch, 'both')
-      icacls(target, '/inheritance:r', '/grant:r', `*${meSid}:(M)`)
+      setFixturePermissions(target)
       stamp(target, PACKAGE_SID)
       const ownerBefore = ownerOf(target)
 
@@ -341,11 +404,13 @@ describe.skipIf(!isWin32 || !pwshAvailable())('diagnose-windows-sandbox-acl scri
       // The sandbox reports its provisioning failure on the workspace root while the
       // conflicting entry sits deeper, so one approved call must clear both.
       const root = makeDir(scratch, 'workspace')
-      icacls(root, '/inheritance:r', '/grant:r', '*S-1-5-11:(M)')
       const deep = makeDir(root, 'deep')
       const leaf = makeDir(deep, 'leaf')
-      icacls(deep, '/inheritance:r', '/grant:r', `*${PACKAGE_SID}:(OI)(CI)(RX)`)
-      icacls(leaf, '/inheritance:r', '/grant:r', `*${OTHER_PACKAGE_SID}:(OI)(CI)(RX)`)
+      setFixturePermissions(deep, meSid, 'FullControl')
+      setFixturePermissions(leaf, meSid, 'FullControl')
+      setFixturePermissions(root, 'S-1-5-11')
+      icacls(deep, '/grant', `*${PACKAGE_SID}:(OI)(CI)(RX)`)
+      icacls(leaf, '/grant', `*${OTHER_PACKAGE_SID}:(OI)(CI)(RX)`)
 
       const run = runScript(['-Path', root, '-AllowRoot', root, '-Out', join(scratch, 'out')])
       expect(run.code, run.output).toBe(0)
@@ -378,7 +443,7 @@ describe.skipIf(!isWin32 || !pwshAvailable())('diagnose-windows-sandbox-acl scri
     const scratch = newScratch()
     try {
       const target = makeDir(scratch, 'inherit-only')
-      icacls(target, '/inheritance:r', '/grant:r', '*S-1-5-11:(M)')
+      setFixturePermissions(target, 'S-1-5-11')
       icacls(target, '/grant', '*S-1-5-32-545:(OI)(CI)(IO)(F)')
       const inheritOnlyBefore = aclLines(target).filter(line => line.includes('(IO)'))
       expect(inheritOnlyBefore).toHaveLength(1)
@@ -566,7 +631,7 @@ describe.skipIf(!isWin32 || !pwshAvailable())('diagnose-windows-sandbox-acl scri
     try {
       const out = join(scratch, 'out')
       const first = makeDir(scratch, 'multi-first')
-      icacls(first, '/inheritance:r', '/grant:r', `*${meSid}:(M)`)
+      setFixturePermissions(first)
       const second = makeDir(scratch, 'multi-second')
       stamp(second, PACKAGE_SID)
       icacls(second, '/deny', `*${meSid}:(WO)`)
@@ -588,7 +653,7 @@ describe.skipIf(!isWin32 || !pwshAvailable())('diagnose-windows-sandbox-acl scri
     try {
       const out = join(scratch, 'out')
       const first = makeDir(scratch, 'pending-first')
-      icacls(first, '/inheritance:r', '/grant:r', `*${meSid}:(M)`)
+      setFixturePermissions(first)
       const second = makeDir(scratch, 'pending-second')
       stamp(second, PACKAGE_SID)
       icacls(second, '/deny', `*${meSid}:(WO)`)
@@ -714,7 +779,7 @@ exit $LASTEXITCODE
     const scratch = newScratch()
     try {
       const target = makeDir(scratch, 'backup-failure')
-      icacls(target, '/inheritance:r', '/grant:r', `*${meSid}:(M)`)
+      setFixturePermissions(target)
       const outputFile = join(scratch, 'not-a-directory')
       writeFileSync(outputFile, 'Existing contents')
       const before = sddlOf(target)
@@ -806,7 +871,7 @@ function icacls { throw [System.IO.IOException]::new('icacls unavailable') }
     try {
       const out = join(scratch, 'out')
       const grantRoot = makeDir(scratch, 'self-grant')
-      icacls(grantRoot, '/inheritance:r', '/grant:r', `*${meSid}:(M)`)
+      setFixturePermissions(grantRoot)
       const grantRun = runScript(['-Path', grantRoot, '-AllowRoot', grantRoot, '-Out', out])
       expect(grantRun.code, grantRun.output).toBe(0)
       expect(grantRun.output).toContain(`GRANTED ${grantRoot} SID=${meSid}`)
@@ -827,7 +892,7 @@ function icacls { throw [System.IO.IOException]::new('icacls unavailable') }
     const scratch = newScratch()
     try {
       const target = makeDir(scratch, 'idempotent')
-      icacls(target, '/inheritance:r', '/grant:r', `*${meSid}:(M)`)
+      setFixturePermissions(target)
       stamp(target, PACKAGE_SID)
       const out = join(scratch, 'out')
 

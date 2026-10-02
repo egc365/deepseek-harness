@@ -160,6 +160,60 @@ const mark = (session: Session, marks: string[]): SessionEvent =>
 const endTurn = (session: Session): SessionEvent =>
   session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
 
+/** Record each promise actually returned by the cache write under test. */
+function admittedWrites(cache: SessionProjectionCache): Promise<void>[] {
+  const admitted: Promise<void>[] = []
+  const real = cache.write.bind(cache)
+  vi.spyOn(cache, 'write').mockImplementation((session) => {
+    const promise = real(session)
+    admitted.push(promise)
+    return promise
+  })
+  return admitted
+}
+
+/**
+ * Hold the first flush for every session and expose that admission synchronously.
+ * Later flushes use the real store method. The caller releases the barrier.
+ */
+function holdFirstFlush(ctx: Context): { entered: Promise<void>; release: () => void; readonly calls: number } {
+  let calls = 0
+  let releaseHeld = (): void => undefined
+  const held = new Promise<void>((resolve) => { releaseHeld = resolve })
+  let entered!: () => void
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve })
+  const original = ctx.sessions.flush.bind(ctx.sessions)
+  ctx.sessions.flush = (async (session: Session) => {
+    calls += 1
+    if (calls === 1) {
+      entered()
+      await held
+    }
+    return original(session)
+  })
+  return {
+    entered: enteredPromise,
+    release: () => { releaseHeld() },
+    get calls() { return calls },
+  }
+}
+
+/** Resolve when a durable put lands the cold mark, not when an earlier row lands. */
+function nextColdPut(ctx: Context, id: SessionId): Promise<void> {
+  return new Promise((resolve) => {
+    const dispose = ctx.on('domain/changed', (change) => {
+      if (change.domain !== projectionCacheDomainSpec.name || change.key !== id || change.operation !== 'put') return
+      const value = change.value
+      if (value === null || typeof value !== 'object' || !('rows' in value)) return
+      const row = (value as CheckpointRecord).rows['cache-test/marks']
+      const parsed = marksUnit().stateSchema.safeParse(row?.val)
+      if (!parsed.success || parsed.data?.marks[0] !== 'cold') return
+      dispose()
+      resolve()
+    })
+  })
+}
+
 /** Resolve after this Session's next durable cache replacement. */
 function whenWritten(ctx: Context, id: SessionId): Promise<void> {
   return new Promise((resolve) => {
@@ -361,6 +415,142 @@ describe('SessionProjectionCache write policy', () => {
     endTurn(session)
     await written
     expect((await storedRows(root, session.id))?.['cache-test/marks']?.val).toEqual({ marks: ['y'] })
+  })
+
+  it('does not let a delayed older flush overwrite a later checkpoint', async () => {
+    const { ctx, root, cache } = await harness()
+    const admitted = admittedWrites(cache)
+    const barrier = holdFirstFlush(ctx)
+    try {
+      const session = ctx.sessions.create(SessionId('late-flush'))
+      await barrier.entered
+      const creation = admitted[0]
+      if (creation === undefined) throw new Error('creation write was not admitted')
+      mark(session, ['fresh'])
+      const later = cache.write(session)
+      const laterFlushAdmittedWhileOlderHeld = barrier.calls > 1
+      if (laterFlushAdmittedWhileOlderHeld) await later
+      barrier.release()
+      await Promise.all(admitted)
+      expect({
+        laterFlushAdmittedWhileOlderHeld,
+        memory: cache.cachedSnapshot(session.header, ['cache-test/marks'])?.values['cache-test/marks'],
+        stored: (await storedRows(root, session.id))?.['cache-test/marks']?.val ?? null,
+      }).toEqual({
+        laterFlushAdmittedWhileOlderHeld: false,
+        memory: { marks: ['fresh'] },
+        stored: { marks: ['fresh'] },
+      })
+    } finally {
+      barrier.release()
+    }
+  })
+
+  it('lets another session finish while one flush is held', async () => {
+    const { ctx, root } = await harness()
+    let release = (): void => undefined
+    const held = new Promise<void>((resolve) => { release = resolve })
+    const original = ctx.sessions.flush.bind(ctx.sessions)
+    const heldIds = new Set<string>()
+    ctx.sessions.flush = (async (session: Session) => {
+      if (session.id === 'held-session' && !heldIds.has(session.id)) {
+        heldIds.add(session.id)
+        await held
+      }
+      return original(session)
+    })
+    try {
+      const heldSession = ctx.sessions.create(SessionId('held-session'))
+      const free = ctx.sessions.create(SessionId('free-session'))
+      mark(free, ['free'])
+      await ctx.sessionProjectionCache.write(free)
+      expect((await storedRows(root, free.id))?.['cache-test/marks']?.val).toEqual({ marks: ['free'] })
+      expect(await storedRows(root, heldSession.id)).toBeUndefined()
+    } finally {
+      release()
+    }
+  })
+
+  it('does not let one rejected write block the next write on that session', async () => {
+    const { ctx, root } = await harness()
+    const original = ctx.sessions.flush.bind(ctx.sessions)
+    let fail = true
+    ctx.sessions.flush = (async (session: Session) => {
+      if (fail) throw new Error('flush failed once')
+      return original(session)
+    })
+    const session = ctx.sessions.create(SessionId('reject-once'))
+    await expect(ctx.sessionProjectionCache.write(session)).rejects.toThrow('flush failed once')
+    fail = false
+    mark(session, ['after'])
+    await ctx.sessionProjectionCache.write(session)
+    expect((await storedRows(root, session.id))?.['cache-test/marks']?.val).toEqual({ marks: ['after'] })
+  })
+
+  it('orders a cold write-back with a live write that was already admitted', async () => {
+    const { ctx, root, cache } = await harness()
+    const admitted = admittedWrites(cache)
+    const barrier = holdFirstFlush(ctx)
+    try {
+      const session = ctx.sessions.create(SessionId('cold-order'))
+      await barrier.entered
+      const creation = admitted[0]
+      if (creation === undefined) throw new Error('creation write was not admitted')
+      const coldPut = nextColdPut(ctx, session.id)
+      const appended = [mark(session, ['live'])]
+      const live = cache.write(session)
+      appended.push(mark(session, ['cold']))
+      if (appended.length !== 2 || appended[0]?.seq !== 0 || appended[1]?.seq !== 1) {
+        throw new Error(`instrument log is not the complete appended prefix: ${appended.map(event => String(event.seq)).join(',')}`)
+      }
+      cache.coldSnapshot(session.header, SessionLogOffset(0), appended)
+      const liveFlushAdmittedWhileOlderHeld = barrier.calls > 1
+      if (liveFlushAdmittedWhileOlderHeld) await live
+      barrier.release()
+      await Promise.all(admitted)
+      await coldPut
+      expect({
+        liveFlushAdmittedWhileOlderHeld,
+        memory: cache.cachedSnapshot(session.header, ['cache-test/marks'])?.values['cache-test/marks'],
+        stored: (await storedRows(root, session.id))?.['cache-test/marks']?.val ?? null,
+      }).toEqual({
+        liveFlushAdmittedWhileOlderHeld: false,
+        memory: { marks: ['cold'] },
+        stored: { marks: ['cold'] },
+      })
+    } finally {
+      barrier.release()
+    }
+  })
+
+  it('drains an admitted write before the domain closes', async () => {
+    const { ctx, root, fiber } = await harness()
+    let release = (): void => undefined
+    const held = new Promise<void>((resolve) => { release = resolve })
+    const original = ctx.sessions.flush.bind(ctx.sessions)
+    const seen = new Set<string>()
+    ctx.sessions.flush = (async (session: Session) => {
+      if (!seen.has(session.id)) {
+        seen.add(session.id)
+        await held
+      }
+      return original(session)
+    })
+    const errors: unknown[] = []
+    ctx.logger.error = (reason: unknown) => { errors.push(reason) }
+    try {
+      const session = ctx.sessions.create(SessionId('drain-close'))
+      mark(session, ['kept'])
+      const live = ctx.sessionProjectionCache.write(session)
+      const closing = fiber.dispose()
+      release()
+      await live
+      await closing
+      expect((await storedRows(root, session.id))?.['cache-test/marks']?.val).toEqual({ marks: ['kept'] })
+      expect(errors).toEqual([])
+    } finally {
+      release()
+    }
   })
 })
 

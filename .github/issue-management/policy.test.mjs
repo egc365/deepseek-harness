@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import './fork.test.mjs'
 
 import { api, graphql, initializeIssueStartDate, issueSnapshot } from './github.mjs'
 import { auditIssue, initializePullRequestStartDates, repairIssueLabels, runLifecycle } from './lifecycle.mjs'
@@ -23,6 +24,19 @@ import {
   validateIssue,
   validatePullRequest,
 } from './rules.mjs'
+
+function useConfiguredRepository(t) {
+  // These upstream fixtures have no Actions event; fork fixtures own their event identity.
+  const keys = ['GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_REPOSITORY_ID', 'GITHUB_EVENT_PATH']
+  const previous = new Map(keys.map((key) => [key, process.env[key]]))
+  t.after(() => {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  })
+  for (const key of keys) delete process.env[key]
+}
 
 const projectGraphqlData = ({
   projectItem = true,
@@ -95,6 +109,7 @@ const projectGraphqlData = ({
 })
 
 const mockGraphql = (t, resolve) => {
+  useConfiguredRepository(t)
   const requests = []
   const previousToken = process.env.GH_TOKEN
   process.env.GH_TOKEN = 'test-token'
@@ -257,6 +272,7 @@ test('reserves PR kind and legacy labels for pull requests', () => {
 })
 
 test('removes reserved labels from Issues before validation', async (t) => {
+  useConfiguredRepository(t)
   const previousToken = process.env.GH_TOKEN
   process.env.GH_TOKEN = 'test-token'
   t.after(() => {
@@ -296,6 +312,7 @@ test('removes reserved labels from Issues before validation', async (t) => {
 })
 
 test('deletes a stale audit comment after repairing its only violation', async (t) => {
+  useConfiguredRepository(t)
   const previousToken = process.env.GH_TOKEN
   process.env.GH_TOKEN = 'test-token'
   t.after(() => {
@@ -406,6 +423,7 @@ test('initializes every referenced Issue only for a PR opened event', async () =
 })
 
 test('reads Priority and Status from Project custom fields', async (t) => {
+  useConfiguredRepository(t)
   const previousGhToken = process.env.GH_TOKEN
   const previousGithubToken = process.env.GITHUB_TOKEN
   const previousProjectToken = process.env.PROJECT_TOKEN
@@ -767,6 +785,7 @@ test('rejects multiple, unknown, legacy, and Issue-source PR labels', () => {
 })
 
 const mockPolicyApi = (t, { pull = {}, requested = true, reviews = [], issues = {}, priority = 'P1', projectError = false } = {}) => {
+  useConfiguredRepository(t)
   const environment = ['GH_TOKEN', 'GITHUB_TOKEN', 'PROJECT_TOKEN', 'GITHUB_API_URL', 'GITHUB_OUTPUT']
   const previous = new Map(environment.map((key) => [key, process.env[key]]))
   const directory = mkdtempSync(join(tmpdir(), 'dsh-policy-'))

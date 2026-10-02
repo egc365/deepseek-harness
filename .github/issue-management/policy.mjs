@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url'
 
 /** Command-line dispatch for PR policy checks and Issue lifecycle events. */
 import { runLifecycle } from './lifecycle.mjs'
+import { runLifecyclePreflight } from './repository.mjs'
 import { runPullRequestCheck, runPullRequestPreflight } from './pull-request.mjs'
 
 function readEvent() {
@@ -17,8 +18,9 @@ async function main(argv) {
   const [command] = argv
   if (command === 'pr-preflight') await runPullRequestPreflight(readEvent())
   else if (command === 'pr') await runPullRequestCheck(readEvent())
+  else if (command === 'lifecycle-preflight') runLifecyclePreflight(readEvent())
   else if (command === 'lifecycle') await runLifecycle(process.env.GITHUB_EVENT_NAME, readEvent())
-  else throw new Error('用法：policy.mjs pr-preflight|pr|lifecycle')
+  else throw new Error('用法：policy.mjs pr-preflight|pr|lifecycle-preflight|lifecycle')
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

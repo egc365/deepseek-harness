@@ -20,6 +20,8 @@ kind: "package-library"
 - [已知限制与延期工作](#known-limitations-and-deferred-work)
 - [开发备注](#dev-note)
 
+v0 迁移边还会将受支持的版本 2 子代理描述符提升为版本 3，但不添加推理强度；对于旧工具调用增量，只移除值为 null 的 `name`。未知字段仍会使迁移失败，直接输入 v1 时仍保持严格校验。这些规范化保留原始工具标识，不会修复畸形的最终工具调用。
+
 -----
 
 <a id="use-this-package"></a>

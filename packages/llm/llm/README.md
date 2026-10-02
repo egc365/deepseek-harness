@@ -58,6 +58,8 @@ for await (const chunk of ctx.llm.stream({
 
 After a successful mount, `ctx.llm.listProviders()` reports the registered routes in registration order.
 
+`BlockAssembler` retains an open tool call's recorded nonempty ID when a continuation delta supplies an empty ID. A later nonempty delta ID replaces the earlier ID. All-empty delta IDs remain empty, and the first `block-end` supplies the authoritative completed block, including its ID and name.
+
 `GenerateOptions.messages` accepts durable `Message` values and request-only `RequestUserInput` values. Request-only inputs carry user-role content with no `id` or `source`; Session writes and Agent delivery still require durable messages. Callers keep auxiliary inputs unchanged until the stream settles. A caller that records its exact request, such as session-title generation, must use durable messages.
 
 ### What you can do

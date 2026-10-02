@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import process from 'node:process'
 
-import config from './config.json' with { type: 'json' }
+import { assertIssueNumber, projectAutomationEnabled, repositoryFullName } from './repository.mjs'
 import { api, projectContext } from './github.mjs'
 import {
   parseReferences,
@@ -21,12 +21,12 @@ import {
 export async function resolvingReferencesSnapshot(number, pull) {
   const references = parseReferences({
     body: pull.body ?? '',
-    repository: `${config.organization}/${config.repository}`,
+    repository: repositoryFullName(),
   })
   const issues = new Map()
   for (const issueNumber of references.all) {
     const issue = await api(
-      `/repos/${config.organization}/${config.repository}/issues/${issueNumber}`,
+      `/repos/${repositoryFullName()}/issues/${issueNumber}`,
     )
     if (!issue.pull_request) issues.set(issueNumber, { priority: null })
   }
@@ -44,7 +44,8 @@ export async function resolvingReferencesSnapshot(number, pull) {
  * @returns {Promise<object>} Policy snapshot; rejects any failed read and performs no writes.
  */
 export async function pullRequestSnapshot(number, includeProject = true) {
-  const pull = await api(`/repos/${config.organization}/${config.repository}/pulls/${number}`)
+  assertIssueNumber(number)
+  const pull = await api(`/repos/${repositoryFullName()}/pulls/${number}`)
   const snapshot = {
     number,
     isDraft: pull.draft,
@@ -55,16 +56,17 @@ export async function pullRequestSnapshot(number, includeProject = true) {
     references: { all: [], resolving: [], related: [] },
     issues: new Map(),
   }
+  if (!projectAutomationEnabled()) snapshot.projectAvailable = false
   if (snapshot.isDraft || ['Bot', 'App'].includes(snapshot.authorType)) return snapshot
   const [reviewRequests, reviews] = await Promise.all([
-    api(`/repos/${config.organization}/${config.repository}/pulls/${number}/requested_reviewers`),
-    api(`/repos/${config.organization}/${config.repository}/pulls/${number}/reviews?per_page=100`),
+    api(`/repos/${repositoryFullName()}/pulls/${number}/requested_reviewers`),
+    api(`/repos/${repositoryFullName()}/pulls/${number}/reviews?per_page=100`),
   ])
   snapshot.reviewRequestCount = reviewRequests.users.length + reviewRequests.teams.length
   snapshot.reviewCount = reviews.length
   if (!requiresPullRequestPolicy(snapshot)) return snapshot
   Object.assign(snapshot, await resolvingReferencesSnapshot(number, pull))
-  if (includeProject) {
+  if (includeProject && projectAutomationEnabled()) {
     for (const issueNumber of snapshot.references.resolving) {
       const context = await projectContext(issueNumber)
       snapshot.issues.get(issueNumber).priority = context.item?.priorityValue?.name ?? null
@@ -79,7 +81,8 @@ export async function pullRequestSnapshot(number, includeProject = true) {
  * @returns {Promise<object>} Lifecycle snapshot without Project reads or writes.
  */
 export async function lifecyclePullRequestSnapshot(number) {
-  const pull = await api(`/repos/${config.organization}/${config.repository}/pulls/${number}`)
+  assertIssueNumber(number)
+  const pull = await api(`/repos/${repositoryFullName()}/pulls/${number}`)
   return {
     ...(await resolvingReferencesSnapshot(number, pull)),
     createdAt: pull.created_at,
@@ -95,15 +98,17 @@ const EXEMPT_MESSAGE =
  * @returns {Promise<{eligible: boolean, needsProject: boolean}>} Trusted workflow decisions.
  */
 export async function runPullRequestPreflight(event) {
+  repositoryFullName(event)
   const pull = await pullRequestSnapshot(event.pull_request.number, false)
   const eligible = requiresPullRequestPolicy(pull)
-  const needsProject = eligible && pull.references.resolving.length > 0
+  const needsProject = projectAutomationEnabled() && eligible && pull.references.resolving.length > 0
   if (process.env.GITHUB_OUTPUT) {
     fs.appendFileSync(
       process.env.GITHUB_OUTPUT,
       `eligible=${eligible}\nexempt=${!eligible}\nneeds-project=${needsProject}\n`,
     )
   }
+  if (!projectAutomationEnabled()) process.stdout.write('Project automation not configured for this repository; PR metadata policy remains enforced.\n')
   process.stdout.write(eligible ? 'Issue policy applicable；执行完整校验。\n' : EXEMPT_MESSAGE)
   return { eligible, needsProject }
 }
@@ -114,6 +119,7 @@ export async function runPullRequestPreflight(event) {
  * @returns {Promise<void>} Resolves on success or exemption; rejects policy failures.
  */
 export async function runPullRequestCheck(event) {
+  repositoryFullName(event)
   const pull = await pullRequestSnapshot(event.pull_request.number)
   const errors = validatePullRequest(pull)
   if (errors.length > 0) {

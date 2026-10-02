@@ -10,6 +10,8 @@ Status: implemented
 
 ## 决策
 
+fork 仓库在以下上游故障切换开关之前选择标准 GitHub 托管运行器：三个必需 Linux 工作作业使用 `ubuntu-24.04`，原生 Windows 工作作业使用 `windows-2025`，Node 兼容性保留各矩阵运行器，判定作业使用 `ubuntu-latest`。fork 保留所有软件门禁、依赖及原生 Windows 命令。持久主机的工作进程限制不适用于这些隔离运行器；并发由未修改的 CPU 默认值控制。此分支不能证明已测量的内存、磁盘容量或已完成的托管门禁。以下上游开关及仅限 master 的热备流程保留原有适用范围。
+
 三个主要 Linux 作业（`node-24`、`node-24-coverage`、`node-24-consumers`）、三个 `node-compat` 矩阵条目和 `all-checks-passed` 通过 `DSH_CI_FAILOVER_LINUX` 解析；原生 Windows 作业通过 `DSH_CI_FAILOVER_WINDOWS` 解析。一个平台的开关不会重定向另一个平台。仓库写者将变量设为 `selfhosted` 时，适用的可信作业选择 `vm-backup` 或 `dsh-win-ci`；`blacksmith` 取值按 [blacksmith 故障切换支路笔记](2026-09-09-blacksmith-failover-leg.zh.md) 路由参与切换的作业；未设置或任何其它值保留工作流定义的托管回退。Node 兼容性作业要求同仓库且非 fork 的头部以及非 Dependabot 作者，使用隔离运行时设置，并在未设置与非特殊值下保留 `ubuntu-latest` 回退；blacksmith 分支不带上述任何条件。在 `selfhosted` 取值下，Linux 故障切换会限制快照并发，并跳过托管软件包缓存恢复。判定作业跟随工作作业，避免继续在不可用的托管池排队。每个开关都是写者可管理的仓库状态而非一次合并，因此在检查失败时仍然有效。`serial / linux (self-hosted standby)` 与 `serial / windows (self-hosted standby)` 通道在 master 推送上重新验证完整的未分片聚合流程。
 
 [被取代 CI 的取消策略](2026-09-09-cancel-superseded-ci.zh.md) 管理同一工作流/引用组内的 master 推送和手动运行，包括热备演练。master 快速更新可能让演练因反复被取消而始终无法得出结论。判断就绪状态时，使用最近一次已完成的热备结论，并核对其时间和提交；已取消或仅被调度的运行不构成就绪证据。

@@ -1,8 +1,6 @@
 name: Build PR preview
 
-# Every push to a pull request publishes that pull request's preview to
-# Cloudflare Pages under its own branch alias, behind Cloudflare Access. The
-# upload carries build products only: the workflow never grants the deployment
+# The upload carries build products only: the workflow never grants the deployment
 # platform access to this repository's sources.
 
 on:
@@ -25,7 +23,7 @@ env:
   # Cloudflare Pages project receiving the upload. Its preview deployments are
   # the surface the Access application protects; the project's production branch
   # is deliberately a name no deployment uses, so no unprotected URL exists.
-  CF_PROJECT: dsh-build-preview
+  CF_PROJECT: ${{ vars.DSH_CF_PROJECT || (github.event.repository.fork != true && 'dsh-build-preview' || '') }}
   # CI runs must never report to the production telemetry endpoint baked into
   # apps/cli/cordis.yml (AppCLIEntry disables the row when set).
   DSH_TELEMETRY_DISABLED: '1'
@@ -87,7 +85,34 @@ jobs:
           find apps/web/dist -name '*.map' -delete
           cp apps/web/dist/preview.html apps/web/dist/index.html
 
+      - name: Verify packaged preview image
+        run: |
+          test -s apps/web/dist/index.html
+          test -s apps/web/dist/preview/vfs-image.tar.gz
+          gzip -t apps/web/dist/preview/vfs-image.tar.gz
+
+      - name: Determine external deployment configuration
+        id: deployment
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        shell: bash
+        run: |
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] && [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ] && [ -z "${CF_ACCESS_CLIENT_ID:-}" ] && [ -z "${CF_ACCESS_CLIENT_SECRET:-}" ]; then
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'Optional external preview deployment not configured; preview packaged, not deployed.' | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ] || [ -z "${CF_ACCESS_CLIENT_ID:-}" ] || [ -z "${CF_ACCESS_CLIENT_SECRET:-}" ] || [ -z "${CF_PROJECT:-}" ]; then
+            echo '::error::Partial external preview configuration; deployment requires token, account, Project and both Access credentials.'
+            exit 1
+          else
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+            echo 'External preview configured; upload and protected image verification remain required.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Upload to Cloudflare Pages
+        if: ${{ steps.deployment.outputs.ready == 'true' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -98,7 +123,7 @@ jobs:
             --commit-dirty=true
 
       # The image is what a worker boot fails on first and least visibly, so the
-      # run only passes once the protected URL serves it as gzip bytes. Three
+      # configured deployment passes only once the protected URL serves gzip bytes. Three
       # facts are asserted, each with its own failure meaning:
       #   200                     Access admitted the request; a 302 means the
       #                           Access policy is missing its Service Auth rule
@@ -112,6 +137,7 @@ jobs:
       # Accept-Encoding is sent because a browser sends it; the assertion is
       # about what the platform does with a body that is already compressed.
       - name: Verify the protected deployment serves the image
+        if: ${{ steps.deployment.outputs.ready == 'true' }}
         env:
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
@@ -151,6 +177,7 @@ jobs:
       # idempotent: a pull request opened before this workflow existed never
       # sees an `opened` event, and every later push must not restate the URL.
       - name: Comment the preview URL
+        if: ${{ steps.deployment.outputs.ready == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
